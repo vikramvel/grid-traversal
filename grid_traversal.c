@@ -1,13 +1,8 @@
 /**
  * grid_traversal.c
  * 
- * Implementation of grid pathfinding algorithm using multi-start greedy approach
- * with 2-step lookahead. Uses BitArray for memory-efficient storage.
+ * Algorithm: BFS with state memoization - explores all reachable states systematically
  * 
- * Algorithm: O(k) time complexity where k = movement points
- * Strategy: Tries multiple starting positions (center, corners, edges) and picks best
- * 
- * License: MIT
  */
 
 #include <stdio.h>
@@ -26,6 +21,7 @@ const int dy[] = {0, 1, 0, -1};
 // =============================================================================
 
 typedef unsigned long long BitWord;
+
 #define BITS_PER_WORD (sizeof(BitWord) * 8)
 
 struct BitArray {
@@ -153,23 +149,6 @@ static inline void add_to_path(Path *path, int x, int y) {
     path->length++;
 }
 
-// Count how many unique cells we actually visited (ignoring backtracking)
-int calculate_unique(Path *path, Grid *grid) {
-    BitArray *seen = create_bitarray(grid->rows * grid->cols);
-    int unique = 0;
-    
-    for (int i = 0; i < path->length; i++) {
-        int idx = path->coords[i].x * grid->cols + path->coords[i].y;
-        if (!bitarray_get(seen, idx)) {
-            bitarray_set(seen, idx);
-            unique++;
-        }
-    }
-    
-    destroy_bitarray(seen);
-    return unique;
-}
-
 void print_path(Path *path) {
     for (int i = 0; i < path->length; i++) {
         printf("(%d,%d)", path->coords[i].x + 1, path->coords[i].y + 1);
@@ -179,164 +158,130 @@ void print_path(Path *path) {
 }
 
 // =============================================================================
-// ALGORITHM: Greedy Solver with Lookahead
+// ALGORITHM: Optimal BFS State-Space Search
 // =============================================================================
 
-// Look ahead and score a position based on future opportunities
-static int evaluate_position(Grid *grid, int x, int y, BitArray *visited, int depth) {
-    if (depth == 0) {  // Base case: count available neighbors
-        int score = 0;
-        for (int dir = 0; dir < 4; dir++) {
-            int nx = x + dx[dir];
-            int ny = y + dy[dir];
-            if (is_valid(grid, nx, ny) && !bitarray_get(visited, nx * grid->cols + ny)) {
-                score++;
-            }
-        }
-        return score;
-    }
-    
-    int best = 0;
-    for (int dir = 0; dir < 4; dir++) {
-        int nx = x + dx[dir];
-        int ny = y + dy[dir];
-        int idx = nx * grid->cols + ny;
-        if (is_valid(grid, nx, ny) && !bitarray_get(visited, idx)) {
-            int score = 1 + evaluate_position(grid, nx, ny, visited, depth - 1);
-            if (score > best) best = score;
-        }
-    }
-    return best;
+// State structure for BFS exploration
+typedef struct {
+    int x, y;           // Current position
+    int moves_left;     // Remaining movement points
+    BitArray *visited;  // Visited cells (owned by this state)
+    int unique_count;   // Number of unique cells visited
+    Path *path;         // Path taken to reach this state
+} State;
+
+// Queue structure for BFS
+typedef struct QueueNode {
+    State *state;
+    struct QueueNode *next;
+} QueueNode;
+
+typedef struct {
+    QueueNode *front;
+    QueueNode *rear;
+} Queue;
+
+Queue* create_queue() {
+    Queue *q = (Queue*)malloc(sizeof(Queue));
+    if (!q) return NULL;
+    q->front = q->rear = NULL;
+    return q;
 }
 
-static int solve_from_position(Grid *grid, int start_x, int start_y, int k, Path *path, BitArray *visited) {
-    // Reset path and visited
-    path->length = 0;
-    memset(visited->words, 0, visited->num_words * sizeof(BitWord));
+void enqueue(Queue *q, State *state) {
+    QueueNode *node = (QueueNode*)malloc(sizeof(QueueNode));
+    if (!node) return;
+    node->state = state;
+    node->next = NULL;
     
-    add_to_path(path, start_x, start_y);
-    bitarray_set(visited, start_x * grid->cols + start_y);
-    
-    int curr_x = start_x;
-    int curr_y = start_y;
-    int moves = 0;
-    int unique_visited = 1;
-    int moves_since_new_cell = 0;
-    int total_unblocked = grid->total_unblocked;
-    
-    while (moves < k) {
-        if (unique_visited >= total_unblocked) break;  // Visited everything!
-        if (moves_since_new_cell > 10) break;  // Stuck in a loop, give up
-        
-        int best_x = -1, best_y = -1;
-        int best_score = -1;
-        bool found_unvisited = false;
-        
-        // First pass: look for unvisited neighbors (greedy)
-        for (int dir = 0; dir < 4; dir++) {
-            int nx = curr_x + dx[dir];
-            int ny = curr_y + dy[dir];
-            int idx = nx * grid->cols + ny;
-            
-            if (is_valid(grid, nx, ny) && !bitarray_get(visited, idx)) {
-                int score = evaluate_position(grid, nx, ny, visited, 2);
-                if (score > best_score) {
-                    best_score = score;
-                    best_x = nx;
-                    best_y = ny;
-                    found_unvisited = true;
-                }
-            }
-        }
-        
-        // No unvisited cells? Backtrack to find new areas
-        if (!found_unvisited) {
-            for (int dir = 0; dir < 4; dir++) {
-                int nx = curr_x + dx[dir];
-                int ny = curr_y + dy[dir];
-                
-                if (is_valid(grid, nx, ny)) {
-                    int score = evaluate_position(grid, nx, ny, visited, 1);
-                    if (score > best_score) {
-                        best_score = score;
-                        best_x = nx;
-                        best_y = ny;
-                    }
-                }
-            }
-        }
-        
-        if (best_x == -1) break;
-        
-        add_to_path(path, best_x, best_y);
-        int idx = best_x * grid->cols + best_y;
-        if (!bitarray_get(visited, idx)) {
-            bitarray_set(visited, idx);
-            unique_visited++;
-            moves_since_new_cell = 0;
-        } else {
-            moves_since_new_cell++;
-        }
-        curr_x = best_x;
-        curr_y = best_y;
-        moves++;
+    if (q->rear == NULL) {
+        q->front = q->rear = node;
+    } else {
+        q->rear->next = node;
+        q->rear = node;
     }
-    
-    return unique_visited;
 }
 
-// Find good starting positions to try (center, corners, edges)
-static void find_candidate_starts(Grid *grid, Coordinate *candidates, int *num_candidates) {
-    *num_candidates = 0;
+State* dequeue(Queue *q) {
+    if (q->front == NULL) return NULL;
     
-    // Try center first (usually best for coverage)
-    int center_x = grid->rows / 2;
-    int center_y = grid->cols / 2;
-    if (is_valid(grid, center_x, center_y)) {
-        candidates[(*num_candidates)++] = (Coordinate){center_x, center_y};
+    QueueNode *temp = q->front;
+    State *state = temp->state;
+    q->front = q->front->next;
+    
+    if (q->front == NULL) {
+        q->rear = NULL;
     }
     
-    // Try four corners
-    int corners[4][2] = {
-        {0, 0},                           // Top-left
-        {0, grid->cols - 1},              // Top-right
-        {grid->rows - 1, 0},              // Bottom-left
-        {grid->rows - 1, grid->cols - 1}  // Bottom-right
-    };
-    for (int i = 0; i < 4; i++) {
-        int x = corners[i][0];
-        int y = corners[i][1];
-        if (is_valid(grid, x, y)) {
-            candidates[(*num_candidates)++] = (Coordinate){x, y};
+    free(temp);
+    return state;
+}
+
+bool is_queue_empty(Queue *q) {
+    return q->front == NULL;
+}
+
+void destroy_queue(Queue *q) {
+    while (!is_queue_empty(q)) {
+        State *s = dequeue(q);
+        if (s) {
+            destroy_bitarray(s->visited);
+            destroy_path(s->path);
+            free(s);
         }
     }
+    free(q);
+}
+
+State* create_state(Grid *grid, int x, int y, int moves_left, 
+                    BitArray *parent_visited, Path *parent_path, int parent_unique) {
+    State *s = malloc(sizeof(State));
+    if (!s) return NULL;
     
-    // Try edge midpoints
-    int edges[4][2] = {
-        {0, grid->cols / 2},              // Top edge
-        {grid->rows / 2, 0},              // Left edge
-        {grid->rows / 2, grid->cols - 1}, // Right edge
-        {grid->rows - 1, grid->cols / 2}  // Bottom edge
-    };
-    for (int i = 0; i < 4; i++) {
-        int x = edges[i][0];
-        int y = edges[i][1];
-        if (is_valid(grid, x, y)) {
-            candidates[(*num_candidates)++] = (Coordinate){x, y};
-        }
+    s->x = x;
+    s->y = y;
+    s->moves_left = moves_left;
+    
+    // Copy parent's visited cells
+    s->visited = create_bitarray(grid->rows * grid->cols);
+    if (!s->visited) {
+        free(s);
+        return NULL;
+    }
+    if (parent_visited) {
+        memcpy(s->visited->words, parent_visited->words, 
+               parent_visited->num_words * sizeof(BitWord));
     }
     
-    // Fallback: scan top-left area if no candidates found
-    if (*num_candidates == 0) {
-        for (int i = 0; i < grid->rows && i < 10; i++) {
-            for (int j = 0; j < grid->cols && j < 10; j++) {
-                if (is_valid(grid, i, j)) {
-                    candidates[(*num_candidates)++] = (Coordinate){i, j};
-                    return;
-                }
-            }
-        }
+    // Mark current cell and count it if new
+    int idx = x * grid->cols + y;
+    bool is_new = !parent_visited || !bitarray_get(parent_visited, idx);
+    bitarray_set(s->visited, idx);
+    s->unique_count = parent_unique + (is_new ? 1 : 0);
+    
+    // Copy parent path and add current position
+    int new_len = parent_path ? parent_path->length + 1 : 1;
+    s->path = create_path(new_len);
+    if (!s->path) {
+        destroy_bitarray(s->visited);
+        free(s);
+        return NULL;
     }
+    if (parent_path) {
+        memcpy(s->path->coords, parent_path->coords, 
+               parent_path->length * sizeof(Coordinate));
+        s->path->length = parent_path->length;
+    }
+    add_to_path(s->path, x, y);
+    
+    return s;
+}
+
+void destroy_state(State *s) {
+    if (!s) return;
+    if (s->visited) destroy_bitarray(s->visited);
+    if (s->path) destroy_path(s->path);
+    free(s);
 }
 
 void solve_and_print(Grid *grid, int k) {
@@ -345,52 +290,90 @@ void solve_and_print(Grid *grid, int k) {
         return;
     }
     
-    // Get candidate starting positions
-    Coordinate candidates[10];  // Max 9 candidates (center + 4 corners + 4 edges)
-    int num_candidates = 0;
-    find_candidate_starts(grid, candidates, &num_candidates);
+    State *best = NULL;
+    int best_count = 0;
     
-    if (num_candidates == 0) {
-        printf("No unblocked squares\n");
-        return;
-    }
-    
-    // Try each starting position, keep whichever gives best coverage
-    int initial_capacity = (k + 1 < 10000) ? k + 1 : 10000;
-    Path *temp_path = create_path(initial_capacity);
-    Path *best_path = create_path(initial_capacity);
-    BitArray *temp_visited = create_bitarray(grid->rows * grid->cols);
-    
-    int best_unique = 0;
-    int best_start_idx = 0;
-    
-    // Try each candidate starting position
-    for (int i = 0; i < num_candidates; i++) {
-        int unique = solve_from_position(grid, candidates[i].x, candidates[i].y, k, temp_path, temp_visited);
-        
-        // Better than what we have? Save it
-        if (unique > best_unique) {
-            best_unique = unique;
-            best_start_idx = i;
+    for (int sx = 0; sx < grid->rows; sx++) {
+        for (int sy = 0; sy < grid->cols; sy++) {
+            if (!is_valid(grid, sx, sy)) continue;
             
-            // Copy path to best_path
-            best_path->length = temp_path->length;
-            if (best_path->capacity < temp_path->length) {
-                best_path->coords = (Coordinate*)realloc(best_path->coords, temp_path->length * sizeof(Coordinate));
-                best_path->capacity = temp_path->length;
+            Queue *q = create_queue();
+            State *start = create_state(grid, sx, sy, k, NULL, NULL, 0);
+            if (!start) continue;
+            enqueue(q, start);
+            
+            int memo_size = grid->rows * grid->cols * (k + 1);
+            int *memo = malloc(memo_size * sizeof(int));
+            if (!memo) {
+                destroy_queue(q);
+                continue;
             }
-            memcpy(best_path->coords, temp_path->coords, temp_path->length * sizeof(Coordinate));
+            memset(memo, -1, memo_size * sizeof(int));
+            
+            while (!is_queue_empty(q)) {
+                State *curr = dequeue(q);
+                
+                if (curr->unique_count > best_count) {
+                    if (best) destroy_state(best);
+                    best = curr;
+                    best_count = curr->unique_count;
+                    curr = NULL;
+                }
+                
+                if (curr && curr->moves_left > 0) {
+                    for (int d = 0; d < 4; d++) {
+                        int nx = curr->x + dx[d];
+                        int ny = curr->y + dy[d];
+                        
+                        if (!is_valid(grid, nx, ny)) continue;
+                        
+                        State *next = create_state(grid, nx, ny, curr->moves_left - 1, 
+                                                   curr->visited, curr->path, curr->unique_count);
+                        if (!next) continue;
+                        
+                        int idx = nx * grid->cols * (k + 1) + ny * (k + 1) + next->moves_left;
+                        if (memo[idx] >= next->unique_count) {
+                            destroy_state(next);
+                            continue;
+                        }
+                        memo[idx] = next->unique_count;
+                        
+                        if (next->unique_count >= grid->total_unblocked) {
+                            if (next->unique_count > best_count) {
+                                if (best) destroy_state(best);
+                                best = next;
+                                best_count = next->unique_count;
+                                next = NULL;
+                            } else {
+                                destroy_state(next);
+                            }
+                            continue;
+                        }
+                        
+                        enqueue(q, next);
+                    }
+                }
+                
+                if (curr) destroy_state(curr);
+            }
+            
+            destroy_queue(q);
+            free(memo);
+            
+            if (best_count >= grid->total_unblocked) {
+                goto done;
+            }
         }
     }
     
-    // Print the best path found
-    best_path->unique_count = best_unique;
-    print_path(best_path);
-    
-    // Cleanup
-    destroy_path(temp_path);
-    destroy_path(best_path);
-    destroy_bitarray(temp_visited);
+done:
+    if (best) {
+        best->path->unique_count = best_count;
+        print_path(best->path);
+        destroy_state(best);
+    } else {
+        printf("No solution found\n");
+    }
 }
 
 // =============================================================================
@@ -478,4 +461,4 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-#endif
+#endif // GRID_TRAVERSAL_LIB
