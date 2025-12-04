@@ -1,10 +1,5 @@
 /**
  * grid_traversal.h
- * 
- * Grid pathfinding with multi-start greedy search and lookahead optimization.
- * Finds paths that maximize coverage of unblocked cells within movement constraints.
- * 
- * License: MIT
  */
 
 #ifndef GRID_TRAVERSAL_H
@@ -42,4 +37,4 @@ Grid* create_grid(int rows, int cols, int num_blocked, Coordinate *blocked_squar
 void destroy_grid(Grid *grid);
 void solve_and_print(Grid *grid, int movement_points);
 
-#endif
+#endif // GRID_TRAVERSAL_H
